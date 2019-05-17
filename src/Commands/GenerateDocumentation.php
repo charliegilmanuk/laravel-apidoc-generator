@@ -34,6 +34,13 @@ class GenerateDocumentation extends Command
 
     private $routeMatcher;
 
+    public $infoText;
+    public $frontmatter;
+    public $prependFileContents;
+    public $appendFileContents;
+    public $parsedRoutes;
+    public $settings;
+
     public function __construct(RouteMatcher $routeMatcher)
     {
         parent::__construct();
@@ -56,40 +63,32 @@ class GenerateDocumentation extends Command
         }
 
         $generator = new Generator(config('apidoc.faker_seed'));
-        $parsedRoutes = $this->processRoutes($generator, $routes);
-        $parsedRoutes = collect($parsedRoutes)->groupBy('group')
+        $this->parsedRoutes = $this->processRoutes($generator, $routes);
+        $this->parsedRoutes = collect($this->parsedRoutes)->groupBy('group')
             ->sortBy(static function ($group) {
                 /* @var $group Collection */
                 return $group->first()['group'];
             }, SORT_NATURAL);
 
-        $this->writeMarkdown($parsedRoutes);
+        $this->writeMarkdown();
     }
 
     /**
-     * @param  Collection $parsedRoutes
+     * Get route output using the given blade template
      *
+     * @param string $view Name of blade template to be given to view()
      * @return void
      */
-    private function writeMarkdown($parsedRoutes)
-    {
-        $outputPath = config('apidoc.output');
-        $targetFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'index.md';
-        $compareFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'.compare.md';
-        $prependFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'prepend.md';
-        $appendFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'append.md';
+    public function getParsedRouteOutput($view = 'apidoc::partials.route') {
+        $settings = $this->settings;
 
-        $infoText = view('apidoc::partials.info')
-            ->with('outputPath', ltrim($outputPath, 'public/'))
-            ->with('showPostmanCollectionButton', $this->shouldGeneratePostmanCollection());
-
-        $settings = ['languages' => config('apidoc.example_languages')];
-        $parsedRouteOutput = $parsedRoutes->map(function ($routeGroup) use ($settings) {
-            return $routeGroup->map(function ($route) use ($settings) {
+        return $this->parsedRoutes->map(function ($routeGroup) use ($settings, $view) {
+            return $routeGroup->map(function ($route) use ($settings, $view) {
                 if (count($route['cleanBodyParameters']) && ! isset($route['headers']['Content-Type'])) {
                     $route['headers']['Content-Type'] = 'application/json';
                 }
-                $route['output'] = (string) view('apidoc::partials.route')
+
+                $route['output'] = (string) view($view)
                     ->with('route', $route)
                     ->with('settings', $settings)
                     ->render();
@@ -97,9 +96,45 @@ class GenerateDocumentation extends Command
                 return $route;
             });
         });
+    }
 
-        $frontmatter = view('apidoc::partials.frontmatter')
-            ->with('settings', $settings);
+    /**
+     * Main command method
+     *
+     * @return void
+     */
+    private function writeMarkdown()
+    {
+        $outputPath = config('apidoc.output');
+        $targetFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'index.md';
+        $compareFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'.compare.md';
+        $prependFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'prepend.md';
+        $appendFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'append.md';
+
+        $this->infoText = view('apidoc::partials.info')
+            ->with('outputPath', ltrim($outputPath, 'public/'))
+            ->with('showPostmanCollectionButton', $this->shouldGeneratePostmanCollection());
+        $this->settings = ['languages' => config('apidoc.example_languages')];
+
+
+        $this->frontmatter = view('apidoc::partials.frontmatter')
+            ->with('settings', $this->settings);
+        $this->prependFileContents = file_exists($prependFile)
+            ? file_get_contents($prependFile)."\n" : '';
+        $this->appendFileContents = file_exists($appendFile)
+            ? "\n".file_get_contents($appendFile) : '';
+
+        /**
+         * Don't want any sort of comparison for Vuepress (yet) so we're calling this
+         * here to prevent any further modification to the route output etc
+         */
+        if (config('apidoc.vuepress.enabled')) {
+            // Use vuepress.route view to get output
+            $this->writeVuepressMarkdown($this->getParsedRouteOutput('apidoc::vuepress.route'));
+        }
+
+        $parsedRouteOutput = $this->getParsedRouteOutput();
+
         /*
          * In case the target file already exists, we should check if the documentation was modified
          * and skip the modified parts of the routes.
@@ -109,7 +144,7 @@ class GenerateDocumentation extends Command
             $compareDocumentation = file_get_contents($compareFile);
 
             if (preg_match('/---(.*)---\\s<!-- START_INFO -->/is', $generatedDocumentation, $generatedFrontmatter)) {
-                $frontmatter = trim($generatedFrontmatter[1], "\n");
+                $this->frontmatter = trim($generatedFrontmatter[1], "\n");
             }
 
             $parsedRouteOutput->transform(function ($routeGroup) use ($generatedDocumentation, $compareDocumentation) {
@@ -131,20 +166,29 @@ class GenerateDocumentation extends Command
             });
         }
 
-        $prependFileContents = file_exists($prependFile)
-            ? file_get_contents($prependFile)."\n" : '';
-        $appendFileContents = file_exists($appendFile)
-            ? "\n".file_get_contents($appendFile) : '';
+        $this->writeDocumentarianMarkdown($parsedRouteOutput);
+        $this->writeCompareMarkdown($parsedRouteOutput);
 
+        if ($logo = config('apidoc.logo')) {
+            copy(
+                $logo,
+                $outputPath.DIRECTORY_SEPARATOR.'images'.DIRECTORY_SEPARATOR.'logo.png'
+            );
+        }
+    }
+
+    public function writeDocumentarianMarkdown($parsedRouteOutput) {
         $documentarian = new Documentarian();
+        $outputPath = config('apidoc.output');
+        $targetFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'index.md';
 
         $markdown = view('apidoc::documentarian')
             ->with('writeCompareFile', false)
-            ->with('frontmatter', $frontmatter)
-            ->with('infoText', $infoText)
-            ->with('prependMd', $prependFileContents)
-            ->with('appendMd', $appendFileContents)
-            ->with('outputPath', config('apidoc.output'))
+            ->with('frontmatter', $this->frontmatter)
+            ->with('infoText', $this->infoText)
+            ->with('prependMd', $this->prependFileContents)
+            ->with('appendMd', $this->appendFileContents)
+            ->with('outputPath', $outputPath)
             ->with('showPostmanCollectionButton', $this->shouldGeneratePostmanCollection())
             ->with('parsedRoutes', $parsedRouteOutput);
 
@@ -154,39 +198,116 @@ class GenerateDocumentation extends Command
 
         // Write output file
         file_put_contents($targetFile, $markdown);
-
-        // Write comparable markdown file
-        $compareMarkdown = view('apidoc::documentarian')
-            ->with('writeCompareFile', true)
-            ->with('frontmatter', $frontmatter)
-            ->with('infoText', $infoText)
-            ->with('prependMd', $prependFileContents)
-            ->with('appendMd', $appendFileContents)
-            ->with('outputPath', config('apidoc.output'))
-            ->with('showPostmanCollectionButton', $this->shouldGeneratePostmanCollection())
-            ->with('parsedRoutes', $parsedRouteOutput);
-
-        file_put_contents($compareFile, $compareMarkdown);
-
-        $this->info('Wrote index.md to: '.$outputPath);
+        $this->info("Wrote index.md to: $outputPath");
 
         $this->info('Generating API HTML code');
 
         $documentarian->generate($outputPath);
 
-        $this->info('Wrote HTML documentation to: '.$outputPath.'/index.html');
+        $this->info("Wrote HTML documentation to: $outputPath/index.html");
 
-        if ($this->shouldGeneratePostmanCollection()) {
-            $this->info('Generating Postman collection');
+        $this->writePostmanCollection($outputPath);
+    }
 
-            file_put_contents($outputPath.DIRECTORY_SEPARATOR.'collection.json', $this->generatePostmanCollection($parsedRoutes));
+    public function writeCompareMarkdown($parsedRouteOutput) {
+        $outputPath = config('apidoc.output');
+        $targetFile = $outputPath.DIRECTORY_SEPARATOR.'source'.DIRECTORY_SEPARATOR.'.compare.md';
+
+        $markdown = view('apidoc::documentarian')
+            ->with('writeCompareFile', true)
+            ->with('frontmatter', $this->frontmatter)
+            ->with('infoText', $this->infoText)
+            ->with('prependMd', $this->prependFileContents)
+            ->with('appendMd', $this->appendFileContents)
+            ->with('outputPath', $outputPath)
+            ->with('showPostmanCollectionButton', $this->shouldGeneratePostmanCollection())
+            ->with('parsedRoutes', $parsedRouteOutput);
+
+        file_put_contents($targetFile, $markdown);
+        $this->info("Wrote compare file to: $outputPath");
+    }
+
+    /**
+     * @param  Collection $parsedRoutes
+     *
+     * @return void
+     */
+    public function writeVuepressMarkdown($parsedRouteOutput) {
+        $outputPath = trim(config('apidoc.vuepress.output'), '/\\') . DIRECTORY_SEPARATOR . trim(config('apidoc.vuepress.folder'), '/\\');
+        $outputFile = $outputPath . DIRECTORY_SEPARATOR . 'index.md';
+        $sourcePath = trim(config('apidoc.vuepress.output', '/\\') . DIRECTORY_SEPARATOR . 'source');
+        $frontmatter = view('apidoc::vuepress.frontmatter')->with('settings', $this->settings);
+
+        // Make vuepress folder specified in config if it doesn't exist
+        if (!is_dir($outputPath)) {
+            mkdir($outputPath, 0777, true);
         }
 
-        if ($logo = config('apidoc.logo')) {
-            copy(
-                $logo,
-                $outputPath.DIRECTORY_SEPARATOR.'images'.DIRECTORY_SEPARATOR.'logo.png'
-            );
+        // Export the parsed routes if debug is enabled
+        if (config('apidoc.vuepress.debug')) {
+            if (!is_dir($sourcePath)) {
+                mkdir($sourcePath, 0777, true);
+            }
+
+            file_put_contents($sourcePath . DIRECTORY_SEPARATOR . 'routes.js', $parsedRouteOutput);
+            $this->info("[Vuepress] Wrote routes.js to $sourcePath");
+        }
+
+        $markdown = view('apidoc::vuepress.index')
+            ->with('writeCompareFile', false)
+            ->with('frontmatter', $frontmatter)
+            ->with('infoText', $this->infoText)
+            ->with('prependMd', $this->prependFileContents)
+            ->with('appendMd', $this->appendFileContents)
+            ->with('outputPath', $outputPath)
+            ->with('showPostmanCollectionButton', $this->shouldGeneratePostmanCollection())
+            ->with('parsedRoutes', $parsedRouteOutput);
+
+        file_put_contents($outputFile, $markdown);
+
+        $this->info("[Vuepress] Wrote index.md to: $outputPath");
+
+        if (config('apidoc.vuepress.single-page') == false) {
+            $count = 1;
+
+            foreach($parsedRouteOutput as $group => $routes) {
+                /**
+                 * By default, $group also contains the group description under the same key,
+                 * use regex below to strip anything after a newline character
+                 */
+                $groupName = preg_match('/^(.+?(?=(\\n|\n|$)))/', $group, $groupNames);
+                $groupName = $groupNames[0];
+
+                // Hyphenate and lowercase $groupName and assign .md extension
+                $fileName = strtolower(str_replace([' ', '_', '-'], '-', $groupName)) . '.md';
+                $markdown = view('apidoc::vuepress.single-page')
+                    ->with('writeCompareFile', false)
+                    ->with('frontmatter', $frontmatter)
+                    ->with('infoText', $this->infoText)
+                    ->with('prependMd', $this->prependFileContents)
+                    ->with('appendMd', $this->appendFileContents)
+                    ->with('outputPath', $outputPath)
+                    ->with('showPostmanCollectionButton', $this->shouldGeneratePostmanCollection())
+                    ->with('parsedRoutes', [$group => $routes]);
+
+                file_put_contents($outputPath . DIRECTORY_SEPARATOR . $fileName, $markdown);
+
+                $this->info("[Vuepress] Wrote $fileName to: $outputPath");
+                $count++;
+            }
+
+            $this->info("[Vuepress] Wrote $count markdown files to your Vuepress directory!");
+            $this->warn("[Vuepress] Please ensure you update your .vuepress/config.js sidebar routes manually");
+        }
+
+        $this->writePostmanCollection($outputPath);
+    }
+
+    public function writePostmanCollection($outputPath) {
+        if ($this->shouldGeneratePostmanCollection()) {
+            $this->info("Generating Postman collection in $outputPath");
+
+            file_put_contents($outputPath.DIRECTORY_SEPARATOR.'collection.json', $this->generatePostmanCollection($this->parsedRoutes));
         }
     }
 

@@ -13,6 +13,44 @@ return [
      */
     'router' => 'laravel',
 
+    /**
+     * Vuepress configuration
+     */
+    'vuepress' => [
+        /**
+         * Specify whether or not to generate vuepress docs as well
+         */
+        'enabled' => true,
+
+        /**
+         * Base vuepress directory relative to app root
+         */
+        'output' => 'docs',
+
+        /**
+         * Subdirectory of the documentation (if you're using a home page)
+         */
+        'folder' => 'docs',
+
+        /**
+         * Choose whether to generate a single index.md or multiple markdown
+         * files for each route group.  Multiple requires you to add the sidebar
+         * links manually in your Vuepress config.js, markdown files will be named
+         * using the group name.
+         */
+        'single-page' => false,
+
+        /**
+         * Output extra files for debugging purposes, i.e. vuepress/source/routes.js
+         */
+        'debug' => false,
+    ],
+
+    'example_languages' => [
+        'javascript',
+        'bash'
+    ],
+
     /*
      * Generate a Postman collection in addition to HTML docs.
      */
