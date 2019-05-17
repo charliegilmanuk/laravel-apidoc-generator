@@ -135,45 +135,47 @@ class GenerateDocumentation extends Command
 
         $parsedRouteOutput = $this->getParsedRouteOutput();
 
-        /*
-         * In case the target file already exists, we should check if the documentation was modified
-         * and skip the modified parts of the routes.
-         */
-        if (file_exists($targetFile) && file_exists($compareFile)) {
-            $generatedDocumentation = file_get_contents($targetFile);
-            $compareDocumentation = file_get_contents($compareFile);
+        if (config('apidoc.documentarian.enabled')) {
+            /*
+            * In case the target file already exists, we should check if the documentation was modified
+            * and skip the modified parts of the routes.
+            */
+            if (file_exists($targetFile) && file_exists($compareFile)) {
+                $generatedDocumentation = file_get_contents($targetFile);
+                $compareDocumentation = file_get_contents($compareFile);
 
-            if (preg_match('/---(.*)---\\s<!-- START_INFO -->/is', $generatedDocumentation, $generatedFrontmatter)) {
-                $this->frontmatter = trim($generatedFrontmatter[1], "\n");
+                if (preg_match('/---(.*)---\\s<!-- START_INFO -->/is', $generatedDocumentation, $generatedFrontmatter)) {
+                    $this->frontmatter = trim($generatedFrontmatter[1], "\n");
+                }
+
+                $parsedRouteOutput->transform(function ($routeGroup) use ($generatedDocumentation, $compareDocumentation) {
+                    return $routeGroup->transform(function ($route) use ($generatedDocumentation, $compareDocumentation) {
+                        if (preg_match('/<!-- START_'.$route['id'].' -->(.*)<!-- END_'.$route['id'].' -->/is', $generatedDocumentation, $existingRouteDoc)) {
+                            $routeDocumentationChanged = (preg_match('/<!-- START_'.$route['id'].' -->(.*)<!-- END_'.$route['id'].' -->/is', $compareDocumentation, $lastDocWeGeneratedForThisRoute) && $lastDocWeGeneratedForThisRoute[1] !== $existingRouteDoc[1]);
+                            if ($routeDocumentationChanged === false || $this->option('force')) {
+                                if ($routeDocumentationChanged) {
+                                    $this->warn('Discarded manual changes for route ['.implode(',', $route['methods']).'] '.$route['uri']);
+                                }
+                            } else {
+                                $this->warn('Skipping modified route ['.implode(',', $route['methods']).'] '.$route['uri']);
+                                $route['modified_output'] = $existingRouteDoc[0];
+                            }
+                        }
+
+                        return $route;
+                    });
+                });
             }
 
-            $parsedRouteOutput->transform(function ($routeGroup) use ($generatedDocumentation, $compareDocumentation) {
-                return $routeGroup->transform(function ($route) use ($generatedDocumentation, $compareDocumentation) {
-                    if (preg_match('/<!-- START_'.$route['id'].' -->(.*)<!-- END_'.$route['id'].' -->/is', $generatedDocumentation, $existingRouteDoc)) {
-                        $routeDocumentationChanged = (preg_match('/<!-- START_'.$route['id'].' -->(.*)<!-- END_'.$route['id'].' -->/is', $compareDocumentation, $lastDocWeGeneratedForThisRoute) && $lastDocWeGeneratedForThisRoute[1] !== $existingRouteDoc[1]);
-                        if ($routeDocumentationChanged === false || $this->option('force')) {
-                            if ($routeDocumentationChanged) {
-                                $this->warn('Discarded manual changes for route ['.implode(',', $route['methods']).'] '.$route['uri']);
-                            }
-                        } else {
-                            $this->warn('Skipping modified route ['.implode(',', $route['methods']).'] '.$route['uri']);
-                            $route['modified_output'] = $existingRouteDoc[0];
-                        }
-                    }
+            $this->writeDocumentarianMarkdown($parsedRouteOutput);
+            $this->writeCompareMarkdown($parsedRouteOutput);
 
-                    return $route;
-                });
-            });
-        }
-
-        $this->writeDocumentarianMarkdown($parsedRouteOutput);
-        $this->writeCompareMarkdown($parsedRouteOutput);
-
-        if ($logo = config('apidoc.logo')) {
-            copy(
-                $logo,
-                $outputPath.DIRECTORY_SEPARATOR.'images'.DIRECTORY_SEPARATOR.'logo.png'
-            );
+            if ($logo = config('apidoc.logo')) {
+                copy(
+                    $logo,
+                    $outputPath.DIRECTORY_SEPARATOR.'images'.DIRECTORY_SEPARATOR.'logo.png'
+                );
+            }
         }
     }
 
@@ -233,7 +235,8 @@ class GenerateDocumentation extends Command
      * @return void
      */
     public function writeVuepressMarkdown($parsedRouteOutput) {
-        $outputPath = trim(config('apidoc.vuepress.output'), '/\\') . DIRECTORY_SEPARATOR . trim(config('apidoc.vuepress.folder'), '/\\');
+        $outputRoot = trim(config('apidoc.vuepress.output'), '/\\');
+        $outputPath = $outputRoot . DIRECTORY_SEPARATOR . trim(config('apidoc.vuepress.folder'), '/\\');
         $outputFile = $outputPath . DIRECTORY_SEPARATOR . 'index.md';
         $sourcePath = trim(config('apidoc.vuepress.output', '/\\') . DIRECTORY_SEPARATOR . 'source');
         $frontmatter = view('apidoc::vuepress.frontmatter')->with('settings', $this->settings);
@@ -300,7 +303,7 @@ class GenerateDocumentation extends Command
             $this->warn("[Vuepress] Please ensure you update your .vuepress/config.js sidebar routes manually");
         }
 
-        $this->writePostmanCollection($outputPath);
+        $this->writePostmanCollection($outputRoot);
     }
 
     public function writePostmanCollection($outputPath) {

@@ -14,6 +14,16 @@ return [
     'router' => 'laravel',
 
     /**
+     * Documentarian specific config
+     */
+    'documentarian' => [
+        /**
+         * Whether to generate Documentarian docs
+         */
+        'enabled' => true,
+    ],
+
+    /**
      * Vuepress configuration
      */
     'vuepress' => [
